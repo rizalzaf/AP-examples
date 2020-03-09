@@ -1,5 +1,3 @@
-using JuMP
-using Gurobi
 using AdversarialPrediction
 import AdversarialPrediction: define, constraint
 
