@@ -8,8 +8,7 @@ using Base.Iterators: partition
 using LinearAlgebra
 
 using Flux
-using Flux.Tracker
-using Flux: σ, logσ
+using Flux: σ, logσ, logitbinarycrossentropy
 
 using Printf, BSON
 using Logging, LoggingExtras
@@ -19,18 +18,6 @@ Random.seed!(0)
 
 include("common_metrics.jl")
 include("pr@rc.jl")
-
-# compute Tracker's gradient and get the objective
-function gradient_obj(f, xs::Params)
-    l = f()
-    Tracker.losscheck(l)
-    Tracker.@interrupts back!(l)
-    gs = Tracker.Grads()
-    for x in xs
-        gs[Tracker.tracker(x)] = Tracker.extract_grad!(x)
-    end
-    return gs, l
-end
 
 
 function load_data(dname, id_split=1)
@@ -60,7 +47,7 @@ function load_data(dname, id_split=1)
     X_test = copy(X_test')
 
     # Standardize into zero mean, unit variance
-    dtrans = StatsBase.fit(StatsBase.ZScoreTransform, X_train)
+    dtrans = StatsBase.fit(StatsBase.ZScoreTransform, X_train, dims = 2)
 
     X_train = StatsBase.transform(dtrans, X_train)
     X_test = StatsBase.transform(dtrans, X_test)
@@ -97,8 +84,8 @@ end
 
 # evaluate and accuracy
 accuracy(x, y, model) = mean((model(x) .>= 0.0f0) .== y)
-evaluate(x, y, model, pm::AdversarialPrediction.PerformanceMetric) = compute_metric(pm, Int.(Tracker.data(model(x) .>= 0.0f0)), y)
-evaluate(x, y, model, pm::PrecisionGvRecall) = prec_at_rec(Tracker.data(model(x)), y, pm.th)
+evaluate(x, y, model, pm::AdversarialPrediction.PerformanceMetric) = compute_metric(pm, Int.(model(x) .>= 0.0f0), y)
+evaluate(x, y, model, pm::PrecisionGvRecall) = prec_at_rec(model(x), y, pm.th)
 
 
 function run(dname::String, lambda::Real = 0.0, positive_class = 7:10)
@@ -162,7 +149,6 @@ function run(dname::String, lambda::Real = 0.0, positive_class = 7:10)
     n_batch = length(train_set)
     result_tr = zeros(n_metric, n_epoch + 1)
     result_val = zeros(n_metric, n_epoch + 1)
-    obj_tr = zeros(n_batch, n_epoch)
 
     # logging save to file 
     log_filename = "log/BCE" * "-" * dname * attr * ".log"
@@ -174,8 +160,7 @@ function run(dname::String, lambda::Real = 0.0, positive_class = 7:10)
     @info(@sprintf("λ: %.3f. Beginning training loop...", lambda))
 
     # training objective
-    logitbinarycrossentropy(logŷ, y) = (1 .- y).*logŷ .- logσ.(logŷ)
-    objective(x, y) = mean(logitbinarycrossentropy(model(x), y)) + lambda * sum(x -> sum(x .^ 2), params(model))  # l2 reg
+    objective(x, y) = mean(logitbinarycrossentropy.(model(x), y)) + lambda * sum(x -> sum(x .^ 2), params(model))  # l2 reg
 
 
     # metrics
@@ -196,29 +181,13 @@ function run(dname::String, lambda::Real = 0.0, positive_class = 7:10)
         sh_id = randperm(length(train_set))
 
         # Train for a single epoch
-        # Flux.train!(objective, params(model), train_set[sh_id], opt)
-        par = Flux.params(model)
-        for ib = 1:n_batch
-            dt = train_set[sh_id[ib]]
-
-            # take gradients
-            gs, obj = gradient_obj(par) do
-                objective(dt...)
-            end
-
-            obj_tr[ib, epoch_idx] = Tracker.data(obj)
-
-            # update params
-            Tracker.update!(opt, par, gs)
-        end
-
+        Flux.train!(objective, params(model), train_set[sh_id], opt)
 
         # metrics
         metrics_val = map(pm -> evaluate(validation_set..., model, pm), eval_metrics) 
         metrics_tr = map(pm -> evaluate(X_tr, y_tr, model, pm), eval_metrics)
         @info string(epoch_idx) * " | TR" * string(metrics_tr .|> Float64 .|> x -> round(x, digits=4)) *
         " VAL" * string(metrics_val .|> Float64 .|> x -> round(x, digits=4))
-        @show obj_tr[n_batch, epoch_idx]
 
         result_val[:, epoch_idx + 1] = metrics_val
         result_tr[:, epoch_idx + 1] = metrics_tr
@@ -253,7 +222,6 @@ function run(dname::String, lambda::Real = 0.0, positive_class = 7:10)
     result_dict[:best_models] = best_models
     result_dict[:result_tr] = result_tr
     result_dict[:result_val] = result_val
-    result_dict[:obj_tr] = obj_tr
 
     return result_dict
 end

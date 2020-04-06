@@ -1,10 +1,8 @@
 using AdversarialPrediction
 import AdversarialPrediction: define, constraint
 
-using Flux
-using Flux.Tracker
 using Flux, Flux.Data.MNIST, Statistics
-using Flux: onehotbatch, onecold, crossentropy, throttle
+using Flux: onehotbatch, onecold, crossentropy, throttle, mapleaves
 using Base.Iterators: repeated, partition
 using Printf, BSON
 using Logging, LoggingExtras
@@ -20,20 +18,6 @@ Random.seed!(0)
 
 include("common_metrics.jl")
 include("pr@rc.jl")
-
-
-# compute Tracker's gradient and get the objective
-function gradient_obj(f, xs::Params)
-    l = f()
-    Tracker.losscheck(l)
-    Tracker.@interrupts back!(l)
-    gs = Tracker.Grads()
-    for x in xs
-        gs[Tracker.tracker(x)] = Tracker.extract_grad!(x)
-    end
-    return gs, l
-end
-  
 
 
 # make multiclass to binary problem
@@ -57,8 +41,6 @@ function make_minibatch(X, Y, idxs)
 end
 
 function compute_metric_batch(pm::PerformanceMetric, batched_set::AbstractArray, model, gc_iter = 100)
-    predict = mapleaves(Flux.Tracker.data, model)
-    Flux.testmode!(predict, true)
 
     n_batch = length(batched_set)
     vy = Vector{Vector{Float32}}(undef, n_batch)
@@ -66,7 +48,7 @@ function compute_metric_batch(pm::PerformanceMetric, batched_set::AbstractArray,
     
     for i = 1:n_batch
         vy[i] = cpu(batched_set[i][2])
-        vps[i] = cpu(predict(batched_set[i][1]))
+        vps[i] = cpu(model(batched_set[i][1]))
 
         if i % gc_iter == 0
             GC.gc()     # garbage collector, reduce memmory req.
@@ -79,8 +61,6 @@ function compute_metric_batch(pm::PerformanceMetric, batched_set::AbstractArray,
 end
 
 function compute_metric_batch(eval_metrics::Vector{<:PerformanceMetric}, batched_set::AbstractArray, model, gc_iter = 100)
-    predict = mapleaves(Flux.Tracker.data, model)
-    Flux.testmode!(predict, true)
 
     n_batch = length(batched_set)
     vy = Vector{Vector{Float32}}(undef, n_batch)
@@ -88,7 +68,7 @@ function compute_metric_batch(eval_metrics::Vector{<:PerformanceMetric}, batched
     
     for i = 1:n_batch
         vy[i] = cpu(batched_set[i][2])
-        vps[i] = cpu(predict(batched_set[i][1]))
+        vps[i] = cpu(model(batched_set[i][1]))
 
         if i % gc_iter == 0
             GC.gc()     # garbage collector, reduce memmory req.
@@ -101,11 +81,9 @@ function compute_metric_batch(eval_metrics::Vector{<:PerformanceMetric}, batched
 end
 
 function compute_metric_batch(pm::PerformanceMetric, data_set::Tuple, model)
-    predict = mapleaves(Flux.Tracker.data, model)
-    Flux.testmode!(predict, true)
 
     y = cpu(data_set[2])
-    yhat = Int.(cpu(predict(data_set[1])) .>= 0)
+    yhat = Int.(cpu(model(data_set[1])) .>= 0)
 
     return compute_metric(pm, yhat, y)
 end
@@ -179,8 +157,8 @@ function run(pm::PerformanceMetric, lambda::Real = 0.0)
     
     # metric computations
     accuracy(x, y, model) = mean((model(x) .>= 0.0f0) .== y)
-    evaluate(x, y, model, pm::AdversarialPrediction.PerformanceMetric) = compute_metric(pm, Int.((model(x) .>= 0.0f0) |> cpu), y |> cpu)
-    evaluate(x, y, model, pm::PrecisionGvRecall) = prec_at_rec(Tracker.data(model(x)) |> cpu, y |> cpu, pm.th)
+    evaluate(x, y, model, pm::AdversarialPrediction.PerformanceMetric) = compute_metric(pm, Int.(model(x) .>= 0.0f0), y)
+    evaluate(x, y, model, pm::PrecisionGvRecall) = prec_at_rec(model(x), y, pm.th)
 
 
     # optimizer
@@ -189,13 +167,11 @@ function run(pm::PerformanceMetric, lambda::Real = 0.0)
     admm_iter = 100
     
     opt = Descent(eta)
-    # opt = Flux.Optimiser(Descent(eta), WeightDecay(lambda))
 
     # save results * objective
     n_batch = length(train_set)
     result_tr = zeros(n_epoch + 1)
     result_val = zeros(n_epoch + 1)
-    obj_tr = zeros(n_batch, n_epoch)
 
     # logging save to file 
     log_filename = "log/" * "AP-MNIST-" * string(pm) * ".log"
@@ -207,8 +183,6 @@ function run(pm::PerformanceMetric, lambda::Real = 0.0)
     @info(@sprintf("λ: %.3f. Beginning training loop...", lambda))
 
     # training objective
-    # logitbinarycrossentropy(logŷ, y) = (1 .- y).*logŷ .- logσ.(logŷ)
-    # objective(x, y) = mean(logitbinarycrossentropy(model(x), y)) + lambda * sum(x -> sum(x .* x), params(model))  # l2 reg
     objective(x, y) = ap_objective(model(x), y, pm; max_iter = admm_iter) + lambda * sum(x -> sum(x .* x), params(model))  # l2 reg
 
 
@@ -231,22 +205,7 @@ function run(pm::PerformanceMetric, lambda::Real = 0.0)
         sh_id = randperm(n_batch)
 
         # Train for a single epoch
-        # Flux.train!(objective, params(model), train_set[sh_id], opt)
-        par = Flux.params(model)
-        for ib = 1:n_batch
-            dt = train_set[sh_id[ib]]
-
-            # take gradients
-            gs, obj = gradient_obj(par) do
-                objective(dt...)
-            end
-
-            obj_tr[ib, epoch_idx] = Tracker.data(obj)
-
-            # update params
-            Tracker.update!(opt, par, gs)
-        end
-        
+        Flux.train!(objective, params(model), train_set[sh_id], opt)
 
         # Calculate metric:
         # val = evaluate(validation_set..., model, pm)
@@ -271,7 +230,6 @@ function run(pm::PerformanceMetric, lambda::Real = 0.0)
     
    # model
     last_model = model
-    # val = evaluate(validation_set..., last_model, pm)
     val = compute_metric_batch(pm, validation_set, last_model)
     
     println()
@@ -285,7 +243,6 @@ function run(pm::PerformanceMetric, lambda::Real = 0.0)
     result_dict[:best_model] = best_model
     result_dict[:result_tr] = result_tr
     result_dict[:result_val] = result_val
-    result_dict[:obj_tr] = obj_tr
 
     return result_dict
 

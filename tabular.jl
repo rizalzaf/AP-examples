@@ -8,7 +8,6 @@ using Base.Iterators: partition
 using LinearAlgebra
 
 using Flux
-using Flux.Tracker
 using Flux: σ, logσ
 
 
@@ -21,19 +20,6 @@ Random.seed!(0)
 include("common_metrics.jl")
 include("pr@rc.jl")
 
-
-# compute Tracker's gradient and get the objective
-function gradient_obj(f, xs::Params)
-    l = f()
-    Tracker.losscheck(l)
-    Tracker.@interrupts back!(l)
-    gs = Tracker.Grads()
-    for x in xs
-        gs[Tracker.tracker(x)] = Tracker.extract_grad!(x)
-    end
-    return gs, l
-end
-  
 
 function load_data(dname, id_split=1)
 
@@ -62,7 +48,7 @@ function load_data(dname, id_split=1)
     X_test = copy(X_test')
 
     # Standardize into zero mean, unit variance
-    dtrans = StatsBase.fit(StatsBase.ZScoreTransform, X_train)
+    dtrans = StatsBase.fit(StatsBase.ZScoreTransform, X_train, dims = 2)
 
     X_train = StatsBase.transform(dtrans, X_train)
     X_test = StatsBase.transform(dtrans, X_test)
@@ -99,8 +85,8 @@ end
 
 # evaluate and accuracy
 accuracy(x, y, model) = mean((model(x) .>= 0.0f0) .== y)
-evaluate(x, y, model, pm::AdversarialPrediction.PerformanceMetric) = compute_metric(pm, Int.(Tracker.data(model(x) .>= 0.0f0)), y)
-evaluate(x, y, model, pm::PrecisionGvRecall) = prec_at_rec(Tracker.data(model(x)), y, pm.th)
+evaluate(x, y, model, pm::AdversarialPrediction.PerformanceMetric) = compute_metric(pm, Int.(model(x) .>= 0.0f0), y)
+evaluate(x, y, model, pm::PrecisionGvRecall) = prec_at_rec(model(x), y, pm.th)
 
 
 function run(dname::String, pm::PerformanceMetric, lambda::Real = 0.0, positive_class = 7:10)
@@ -161,7 +147,6 @@ function run(dname::String, pm::PerformanceMetric, lambda::Real = 0.0, positive_
     n_batch = length(train_set)
     result_tr = zeros(n_epoch + 1)
     result_val = zeros(n_epoch + 1)
-    obj_tr = zeros(n_batch, n_epoch)
 
     # logging save to file 
     log_filename = "log/" * "AP-" * dname * attr * "-" * string(pm) * ".log"
@@ -192,27 +177,12 @@ function run(dname::String, pm::PerformanceMetric, lambda::Real = 0.0, positive_
         sh_id = randperm(n_batch)
 
         # Train for a single epoch
-        # @time Flux.train!(objective, params(model), train_set[sh_id], opt)
-        par = Flux.params(model)
-        @time for ib = 1:n_batch
-            dt = train_set[sh_id[ib]]
-
-            # take gradients
-            gs, obj = gradient_obj(par) do
-                objective(dt...)
-            end
-
-            obj_tr[ib, epoch_idx] = Tracker.data(obj)
-
-            # update params
-            Tracker.update!(opt, par, gs)
-        end
-
+        @time Flux.train!(objective, params(model), train_set[sh_id], opt)
 
         # Calculate metric:
         val = evaluate(validation_set..., model, pm)
         val_tr = evaluate(X_tr, y_tr, model, pm)
-        @info(@sprintf("λ: %.3f. [%d]: [%s] Train metric: %.5f, validation metric: %.5f, last_obj: %.5f", lambda, epoch_idx, string(pm), val_tr, val, obj_tr[n_batch, epoch_idx]))
+        @info(@sprintf("λ: %.3f. [%d]: [%s] Train metric: %.5f, validation metric: %.5f", lambda, epoch_idx, string(pm), val_tr, val))
 
         result_val[epoch_idx + 1] = val
         result_tr[epoch_idx + 1] = val_tr
@@ -241,7 +211,6 @@ function run(dname::String, pm::PerformanceMetric, lambda::Real = 0.0, positive_
     result_dict[:best_model] = best_model
     result_dict[:result_tr] = result_tr
     result_dict[:result_val] = result_val
-    result_dict[:obj_tr] = obj_tr
 
     return result_dict
 end

@@ -8,7 +8,7 @@ This repository provides code examples for the experiments in an AISTATS 2020 pa
 To run the code, some pre-requisite packages need to be installed. Below is the list of the packages:
 ```
 AdversarialPrediction
-Flux@0.9
+Flux@0.10
 StatsBase
 DelimitedFiles
 BSON
@@ -16,7 +16,7 @@ LoggingExtras
 EvalCurves
 ``` 
 
-The `AdversarialPrediction` package can be installed from [https://github.com/rizalzaf/AdversarialPrediction.jl](https://github.com/rizalzaf/AdversarialPrediction.jl). For the `Flux` package, we require `Flux v0.9`, which uses Tracker-based auto differentiation tool. The `EvalCurves` can be installed from a Julia terminal using the command: `]add https://github.com/vitskvara/EvalCurves.jl`. All other packages can be installed from a Julia terminal using the command: `]add PackageName`.
+The `AdversarialPrediction` package can be installed from [https://github.com/rizalzaf/AdversarialPrediction.jl](https://github.com/rizalzaf/AdversarialPrediction.jl) by running `] add AdversarialPrediction`. For the `Flux` package, we require `Flux v0.10` or later, which uses Zygote-based auto differentiation tool. The `EvalCurves` can be installed from a Julia terminal using the command: `]add https://github.com/vitskvara/EvalCurves.jl`. All other packages can be installed from a Julia terminal using the command: `]add PackageName`.
 
 To run the experiments on GPU, the following packages also need to be installed.
 ```

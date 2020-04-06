@@ -2,7 +2,7 @@ using EvalCurves
 
 function prec_at_rec(x, y, rec = 0.8)
     ps = model(x) |> cpu
-    prec_at_rec(data(ps), y |> cpu, rec)
+    prec_at_rec(ps, y |> cpu, rec)
 end
 
 function prec_at_rec(ps::AbstractVector{<:Number}, y::AbstractVector{<:Number}, rec = 0.8)
